@@ -3,9 +3,10 @@
 #### *Company: Ethereum Push Notification Service*
 #### *Source Code: https://github.com/TheNuelgeek/epns-smart-contracts-genesis/blob/master/contracts/benchmarks/EPNSBenchmarkV3.sol*
 
+#### Reviewed by: [Nuelgeek](https://github.com/TheNuelgeek)
 ---
 #  **Review**
-
+The `EPNSBenchmarkV3.sol` is an ERC20 contract which implements the specification of ERC20 token standard and more as stated below
 ##  **State Variables**
 
 ```
@@ -18,6 +19,54 @@
     uint public totalSupply = 100_000_000e18; // 100 million PUSH
 
     uint public born;
+
+       /// @dev Allowance amounts on behalf of others
+    mapping (address => mapping (address => uint96)) internal allowances;
+
+    /// @dev Official record of token balances for each account
+    mapping (address => uint96) internal balances;
+
+    /// @notice Official record of the token block information for the holder
+    mapping (address => uint) public holderWeight;
+
+    /// @notice A record of each accounts delegate
+    mapping (address => address) public delegates;
+
+    /// @notice A checkpoint for marking number of votes from a given block
+    struct Checkpoint {
+        uint32 fromBlock;
+        uint96 votes;
+    }
+
+    /// @notice A record of votes checkpoints for each account, by index
+    mapping (address => mapping (uint32 => Checkpoint)) public checkpoints;
+
+    /// @notice The number of checkpoints for each account
+    mapping (address => uint32) public numCheckpoints;
+
+    /// @notice The EIP-712 typehash for the contract's domain
+    bytes32 public constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)");
+
+    /// @notice The EIP-712 typehash for the delegation struct used by the contract
+    bytes32 public constant DELEGATION_TYPEHASH = keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)");
+
+    /// @notice The EIP-712 typehash for the permit struct used by the contract
+    bytes32 public constant PERMIT_TYPEHASH = keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+
+    /// @notice A record of states for signing / validating signatures
+    mapping (address => uint) public nonces;
+
+    /// @notice An event thats emitted when an account changes its delegate
+    event DelegateChanged(address indexed delegator, address indexed fromDelegate, address indexed toDelegate);
+
+    /// @notice An event thats emitted when a delegate account's vote balance changes
+    event DelegateVotesChanged(address indexed delegate, uint previousBalance, uint newBalance);
+
+    /// @notice The standard EIP-20 transfer event
+    event Transfer(address indexed from, address indexed to, uint256 amount);
+
+    /// @notice The standard EIP-20 approval event
+    event Approval(address indexed owner, address indexed spender, uint256 amount);
 ```
 ##  **Functions**
 The Constructor, constructs a new PUSH TOKEN and allows the initial account to grant all the tokens into existence
@@ -214,4 +263,126 @@ The Constructor, constructs a new PUSH TOKEN and allows the initial account to g
 
         _moveDelegates(currentDelegate, delegatee, delegatorBalance);
     }
+```
+@_transferTokens This function transfers amount from `src` to `dst` and confirms that both are not address `0`, updates balance
+```
+   function _transferTokens(address src, address dst, uint96 amount) internal {
+        require(src != address(0), "Push::_transferTokens: cannot transfer from the zero address");
+        require(dst != address(0), "Push::_transferTokens: cannot transfer to the zero address");
+
+        // adjust holder weight
+        _adjustHolderWeight(src, dst, amount);
+
+        // update balance
+        balances[src] = sub96(balances[src], amount, "Push::_transferTokens: transfer amount exceeds balance");
+        balances[dst] = add96(balances[dst], amount, "Push::_transferTokens: transfer amount overflows");
+        emit Transfer(src, dst, amount);
+
+        _moveDelegates(delegates[src], delegates[dst], amount);
+    }
+
+```
+@_adjustHolderWeight
+```
+   function _adjustHolderWeight(address src, address dst, uint96 amount) internal {
+      // change holderWeight block
+      if (balances[dst] == 0) {
+        holderWeight[dst] = holderWeight[src];
+      }
+      else {
+        uint256 dstWeight = mul256(holderWeight[dst], balances[dst], "Push::_transferTokens: holder dst weight exceeded limit");
+        uint256 srcWeight = mul256(holderWeight[src], amount, "Push::_transferTokens: holder src weight exceeded limit");
+
+        uint256 totalWeight = add256(dstWeight, srcWeight, "Push::_transferTokens: total weight exceeded limit");
+        uint256 totalAmount = add256(balances[dst], amount, "Push::_transferTokens: total amount exceeded limit");
+
+        holderWeight[dst] = div256(totalWeight, totalAmount, "Push::_transferTokens: holderWeight averaged exceeded limit");
+      }
+    }
+
+```
+@safe32 This requires that the input is lesser than 32 Bits
+```
+   function safe32(uint n, string memory errorMessage) internal pure returns (uint32) {
+        require(n < 2**32, errorMessage);
+        return uint32(n);
+    }
+
+```
+@safe96 This requires that the input is lesser than 96Bits
+```
+   function safe96(uint n, string memory errorMessage) internal pure returns (uint96) {
+        require(n < 2**96, errorMessage);
+        return uint96(n);
+    }
+
+```
+@add96 This adds the inputs and checks for underflow/overflow, then returns the value in variable container of 96bits
+
+@sub96 The function subtracts the inputs and returns the difference while checking  for overflow/unuderflow
+
+@add256 This adds the inputs and checks for underflow/overflow returns the value in variable container of 256bits
+
+@sub256 This subtracts the inputs and checks for underflow/overflow, then returns the value in variable container of 256bits
+
+@mul256 Multiplies the inputs and optimizes the using [Open Zepplin multication multipler](https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522)
+
+@div256 Divides the inputs 
+
+@getChainId Returns the chain ID of the current connected node as described in the EIP-695.
+```
+    function add96(uint96 a, uint96 b, string memory errorMessage) internal pure returns (uint96) {
+        uint96 c = a + b;
+        require(c >= a, errorMessage);
+        return c;
+    }
+
+    function sub96(uint96 a, uint96 b, string memory errorMessage) internal pure returns (uint96) {
+        require(b <= a, errorMessage);
+        return a - b;
+    }
+
+    function add256(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, errorMessage);
+
+        return c;
+    }
+
+    function sub256(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul256(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, errorMessage);
+
+        return c;
+    }
+
+    function div256(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+      // Solidity only automatically asserts when dividing by 0
+      require(b > 0, errorMessage);
+      uint256 c = a / b;
+      // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+      return c;
+    }
+
+    function getChainId() internal pure returns (uint) {
+        uint256 chainId;
+        assembly { chainId := chainid() }
+        return chainId;
+    }
+
 ```
